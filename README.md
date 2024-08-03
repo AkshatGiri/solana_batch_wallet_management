@@ -28,7 +28,7 @@ node index.js --help
 node index.js generate-wallets 10 --output wallets.json
 ```
 
-### Get Wallets
+### Fund Wallets
 
 ```bash
 node index.js fund-wallets {wallets_to_fund_json_file} {sol_amount_to_send} {sender_private_key}
