@@ -8,6 +8,12 @@ A simple cli utility to batch manage Solana wallets. This is currently very much
 npm install
 ```
 
+Add a `.env` file to the root of the project with the following:
+
+```bash
+RPC_ENDPOINT=https://api.devnet.solana.com
+```
+
 ## Usage
 
 ```bash
