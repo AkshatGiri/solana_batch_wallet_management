@@ -1,0 +1,20 @@
+{
+  "name": "solana_batch_wallet_management",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "You can directly run the index.js file and pass in arguments as required. I haven't figured out how to pass in arguments using npm start command."
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@solana/web3.js": "^1.95.2",
+    "bs58": "^6.0.0",
+    "commander": "^12.1.0",
+    "dotenv": "^16.4.5",
+    "inquirer": "^10.1.6"
+  }
+}
