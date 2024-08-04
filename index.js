@@ -53,6 +53,29 @@ program
   .argument("<from>", "base58 private key of the wallet to send sol from")
   .action(fundWallets);
 
+program
+  .command("consolidate-sol")
+  .description("Recover sol from many wallets to a single wallet.")
+  .argument(
+    "<walletsFile>",
+    "json file containing wallets. File should have an array of objects with privateKey field."
+  )
+  .argument("<to>", "base58 public key of the wallet to send sol to.")
+  .action(() => {
+    // THOUGHT: Maybe I can have an option on how much sol to send back to the wallet.
+    // and we can have the "all" option as the default.
+    console.log("TODO: Implement recover-sol command.");
+  });
+
+program
+  .command("get-balances")
+  .description("Get sol balance of wallets.")
+  .argument(
+    "<walletsFile>",
+    "json file containing wallets. File should have an array of objects with publicKey field."
+  )
+  .action(getBalances);
+
 ////////////////////
 // IMPLEMENTATION //
 ////////////////////
@@ -86,7 +109,11 @@ async function fundWallets(walletsFilePath, solAmountStr, senderPrivateKey) {
   console.log(`Sender SOL balance: ${lamportsToSol(senderBalance)}`);
   const totalSolTransfer = solPerWallet * BigInt(wallets.length);
   if (senderBalance < totalSolTransfer) {
-    console.error("Sender does not have enough balance to fund all wallets.");
+    console.error(
+      `Sender does not have enough balance to fund all wallets. ${lamportsToSol(
+        senderBalance
+      )} < ${lamportsToSol(totalSolTransfer)}`
+    );
     process.exit(1);
   }
 
@@ -213,6 +240,59 @@ async function generateWallets(numberOfWalletsStr, options) {
   } catch (error) {
     console.error("There was an error generating wallets: ", error);
   }
+}
+
+async function getBalances(walletsFilePath) {
+  const isFilePathValid = await doesFileExist(walletsFilePath);
+  if (!isFilePathValid) {
+    console.error(`Wallets file at ${walletsFilePath} does not exist.`);
+    process.exit(1);
+  }
+
+  const walletsInfo = JSON.parse(await fs.readFile(walletsFilePath, "utf-8"));
+
+  walletsInfo.forEach((w) => {
+    if (!w.publicKey) {
+      console.error(`Invalid wallet in file: ${w}`);
+      process.exit(1);
+    }
+  });
+
+  console.log(`Fetching SOL Balance for ${walletsInfo.length} wallets.`);
+
+  const wallets = walletsInfo.map((w) => new PublicKey(w.publicKey));
+
+  const connection = new Connection(RPC_ENDPOINT, "confirmed");
+
+  const balances = await Promise.allSettled(
+    wallets.map(async (wallet) => {
+      const balance = await connection.getBalance(wallet);
+      return { wallet, balance };
+    })
+  );
+
+  const failedBalances = balances.filter((b) => b.status === "rejected");
+  const successfulBalances = balances.filter((b) => b.status === "fulfilled");
+
+  if (failedBalances.length > 0) {
+    console.error(
+      `Failed to get balance for ${failedBalances.length} wallets.`
+    );
+  }
+
+  const totalSol = successfulBalances.reduce(
+    (acc, b) => acc + b.value.balance,
+    0
+  );
+
+  console.log(`Total sol: ${lamportsToSol(totalSol)}`);
+
+  console.table(
+    successfulBalances.map((b) => ({
+      wallet: b.value.wallet.toBase58(),
+      balance: lamportsToSol(b.value.balance),
+    }))
+  );
 }
 
 ////////////////////
