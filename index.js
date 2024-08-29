@@ -4,9 +4,12 @@ import {
   Keypair,
   LAMPORTS_PER_SOL,
   PublicKey,
+  sendAndConfirmRawTransaction,
   sendAndConfirmTransaction,
   SystemProgram,
   Transaction,
+  TransactionMessage,
+  VersionedTransaction,
 } from "@solana/web3.js";
 import fs from "fs/promises";
 import bs58 from "bs58";
@@ -55,17 +58,15 @@ program
 
 program
   .command("consolidate-sol")
-  .description("Recover sol from many wallets to a single wallet.")
+  .description("Consolidate sol from multiple wallets to a single wallet.")
   .argument(
     "<walletsFile>",
-    "json file containing wallets. File should have an array of objects with privateKey field."
+    "json file containing wallets. File should have an array of objects with privateKey and publicKey field."
   )
-  .argument("<to>", "base58 public key of the wallet to send sol to.")
-  .action(() => {
-    // THOUGHT: Maybe I can have an option on how much sol to send back to the wallet.
-    // and we can have the "all" option as the default.
-    console.log("TODO: Implement recover-sol command.");
-  });
+  .argument("<toAddress>", "public Key of the wallet to send sol to.")
+  // TODO: We can probably add an option to say how much sol to send per wallet
+  // although most of the time we want this to be all the sol in the wallet.
+  .action(consolidateSol);
 
 program
   .command("get-balances")
@@ -284,18 +285,10 @@ async function getBalances(walletsFilePath) {
   const failedBalances = balances.filter((b) => b.status === "rejected");
   const successfulBalances = balances.filter((b) => b.status === "fulfilled");
 
-  if (failedBalances.length > 0) {
-    console.error(
-      `Failed to get balance for ${failedBalances.length} wallets.`
-    );
-  }
-
   const totalSol = successfulBalances.reduce(
     (acc, b) => acc + b.value.balance,
     0
   );
-
-  console.log(`Total sol: ${lamportsToSol(totalSol)}`);
 
   console.table(
     successfulBalances.map((b) => ({
@@ -303,6 +296,119 @@ async function getBalances(walletsFilePath) {
       balance: lamportsToSol(b.value.balance),
     }))
   );
+
+  if (failedBalances.length > 0) {
+    console.error(
+      `Failed to get balance for ${failedBalances.length} wallets.`
+    );
+  }
+
+  console.log(`Total sol: ${lamportsToSol(totalSol)}`);
+}
+
+async function consolidateSol(walletsFilePath, toAddress) {
+  const wallets = await getWalletsFromFile(walletsFilePath);
+  const toPubKey = new PublicKey(toAddress);
+
+  const connection = new Connection(RPC_ENDPOINT, "confirmed");
+
+  // fetch sol balances for all addresses
+  const balances = await Promise.all(
+    wallets.map(async (wallet) => {
+      const balance = await connection.getBalance(wallet.publicKey);
+      return {
+        wallet,
+        balance,
+        transferableBalance: BigInt(balance) - solToLamports(0.001),
+      };
+    })
+  );
+
+  const totalSolTransfer = balances.reduce(
+    (acc, b) => acc + b.transferableBalance,
+    0n
+  );
+
+  const { proceed } = await inquirer.prompt([
+    {
+      type: "input",
+      name: "proceed",
+      message: `Sending ${lamportsToSol(totalSolTransfer)} sol from ${
+        wallets.length
+      } wallets to ${toAddress}. Proceed? (y/n)`,
+    },
+  ]);
+
+  if (proceed.trim().toLowerCase() !== "y") {
+    console.log("Exiting.");
+    process.exit(0);
+  }
+
+  // Chunk wallets into groups for each transaction
+  const transfersPerTx = 5;
+  const chunked = chunkArray(balances, transfersPerTx);
+
+  const blockhash = (await connection.getLatestBlockhash()).blockhash;
+
+  const txs = chunked.map((chunk) => {
+    const tx = new Transaction();
+    chunk.forEach(({ wallet, transferableBalance }) => {
+      tx.add(
+        SystemProgram.transfer({
+          fromPubkey: wallet.publicKey,
+          toPubkey: toPubKey,
+          lamports: transferableBalance,
+        })
+      );
+    });
+
+    const messageV0 = new TransactionMessage({
+      payerKey: chunk[0].wallet.publicKey,
+      recentBlockhash: blockhash,
+      instructions: tx.instructions,
+    }).compileToV0Message([]);
+
+    const versionedTx = new VersionedTransaction(messageV0);
+    versionedTx.sign(chunk.map(({ wallet }) => wallet));
+
+    return versionedTx;
+  });
+
+  // Send transactions
+  console.log(`Sending ${txs.length} transactions.`);
+
+  const txsResponses = await Promise.allSettled(
+    txs.map((tx) =>
+      sendAndConfirmRawTransaction(
+        connection,
+        tx.serialize(),
+        { maxRetries: 5 },
+        { commitment: "confirmed" }
+      )
+    )
+  );
+
+  const successfulTxs = txsResponses.filter((tx) => tx.status === "fulfilled");
+  const failedTxs = txsResponses.filter((tx) => tx.status === "rejected");
+  console.log(`${successfulTxs.length} successful transactions.`);
+  console.log(`${failedTxs.length} failed transactions.`);
+
+  console.log("\n========= SUCCESSFUL TXS =========\n");
+
+  successfulTxs.forEach((txResponse) => {
+    const { value: sig } = txResponse;
+
+    console.log(`https://solscan.io/tx/${sig}`);
+  });
+
+  if (failedTxs.length === 0) return;
+
+  console.log("\n========= FAILED TXS =========m");
+  failedTxs.forEach((txResponse) => {
+    const { value: sig } = txResponse;
+
+    console.log(`https://solscan.io/tx/${sig}`);
+  });
 }
 
 async function getTokenBalances(walletsFilePath, tokenMint) {
