@@ -76,6 +76,16 @@ program
   )
   .action(getBalances);
 
+program
+  .command("get-token-balances")
+  .description("Get specified token balance for each wallet.")
+  .argument(
+    "<walletsFile>",
+    "json file containing wallets. File should have an array of objects with publicKey field."
+  )
+  .argument("<tokenMint>", "token mint address")
+  .action(getTokenBalances);
+
 ////////////////////
 // IMPLEMENTATION //
 ////////////////////
@@ -295,9 +305,88 @@ async function getBalances(walletsFilePath) {
   );
 }
 
+async function getTokenBalances(walletsFilePath, tokenMint) {
+  const wallets = await getWalletsFromFile(walletsFilePath);
+
+  const connection = new Connection(RPC_ENDPOINT, "confirmed");
+
+  const token = new PublicKey(tokenMint);
+
+  const walletAtas = await Promise.all(
+    wallets.map(async (wallet) => {
+      const res = await connection.getTokenAccountsByOwner(
+        wallet.publicKey,
+        { mint: token },
+        "confirmed"
+      );
+
+      if (res.value.length === 0) {
+        return null;
+      }
+      return res.value[0];
+    })
+  );
+
+  const balances = await Promise.all(
+    walletAtas.map(async (ata) => {
+      if (!ata) {
+        return {
+          amount: "0",
+          decimals: 0,
+          uiAmount: 0,
+          uiAmountString: "0",
+        };
+      }
+
+      const balance = await connection.getTokenAccountBalance(ata.pubkey);
+      return balance.value;
+    })
+  );
+
+  console.table(
+    wallets.map((w, i) => {
+      const balance = balances[i];
+      return {
+        wallet: w.publicKey.toBase58(),
+        ata: walletAtas[i] ? walletAtas[i].pubkey.toBase58() : "N/A",
+        balance: balance.uiAmount,
+      };
+    })
+  );
+
+  console.log(`Fetched token balances for ${wallets.length} wallets.`);
+
+  const totalBalance = balances.reduce((acc, b) => acc + b.uiAmount, 0);
+
+  console.log(`Total Balance: ${totalBalance.toLocaleString()}`);
+}
+
 ////////////////////
 // Util functions //
 ////////////////////
+
+async function getWalletsFromFile(filePath) {
+  const isFilePathValid = await doesFileExist(filePath);
+  if (!isFilePathValid) {
+    console.error(`Wallets file at ${filePath} does not exist.`);
+    process.exit(1);
+  }
+
+  const walletsInfo = JSON.parse(await fs.readFile(filePath, "utf-8"));
+
+  walletsInfo.forEach((w) => {
+    if (!w.publicKey || !w.privateKey) {
+      console.error(`Invalid wallet ${w} in file ${filePath}`);
+      process.exit(1);
+    }
+  });
+
+  const wallets = walletsInfo.map((w) => {
+    return Keypair.fromSecretKey(bs58.decode(w.privateKey));
+  });
+
+  return wallets;
+}
 
 async function doesFileExist(path) {
   try {
